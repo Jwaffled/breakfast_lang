@@ -1,0 +1,5 @@
+function u0:0() windows_fastcall {
+block0:
+    v0 = f64const 0x1.4000000000000p2
+    return v0
+}
