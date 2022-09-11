@@ -26,7 +26,11 @@ static OW_KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "tastier" => TokenType::GreaterThanTastier,
     "cookwhile" => TokenType::ForCookUntil,
     "stir" => TokenType::ForStir,
-    "ain't" => TokenType::Not
+    "ain't" => TokenType::Not,
+    "texture" => TokenType::BoolTexture,
+    "cal" => TokenType::NumberCal,
+    "smoothie" => TokenType::StringSmoothie,
+    "empty" => TokenType::VoidEmpty,
 };
 
 pub fn lex_tokens(source: String) -> Result<Vec<Token>, LexerError> {
@@ -127,7 +131,7 @@ impl Lexer {
                         col: self.col,
                     })
                 }
-            },
+            }
             ':' => self.add_token(TokenType::Colon),
             '"' => self.string(),
             ' ' | '\r' | '\t' => (),
@@ -308,7 +312,8 @@ mod tests {
 
     #[test]
     fn test() {
-        match lex_tokens("5 + 5".to_string()) {
+        match lex_tokens("omelette MyStruct |> someFood: String# otherFood: String# <|".to_string())
+        {
             Ok(tokens) => {
                 println!("{:?}", tokens);
             }

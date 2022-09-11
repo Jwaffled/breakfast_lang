@@ -1,222 +1,224 @@
-use std::{collections::HashMap, fs::File, io::Write};
+// #![deny(clippy::all)]
 
-use cranelift::prelude::{isa::CallConv, settings::FlagsOrIsa, *};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{DataContext, Linkage, Module};
+// use std::{collections::HashMap, fs::File, io::Write};
 
-use crate::{
-    ast::{BinaryOp, BinaryOpType, Expr, Literal, Stmt},
-    lexer, parser,
-};
+// use cranelift::prelude::{isa::CallConv, settings::FlagsOrIsa, *};
+// use cranelift_jit::{JITBuilder, JITModule};
+// use cranelift_module::{DataContext, Linkage, Module};
 
-pub fn generate_code(source: &str) -> Result<*const u8, String> {
-    match lexer::lex_tokens(source.to_string()) {
-        Ok(tokens) => match parser::parse(tokens) {
-            Ok(ast) => {
-                let mut jit = BreakfastJIT::new();
-                match jit.compile(ast) {
-                    Ok(ptr) => Ok(ptr),
-                    Err(err) => Err(format!("Error generating code: {}", err)),
-                }
-            }
-            Err(err) => Err(format!("ParserError: {:?}", err)),
-        },
-        Err(err) => Err(format!(
-            "LexerError: {} on line {} col {}",
-            err.message, err.line, err.col
-        )),
-    }
-}
+// use crate::{
+//     ast::{BinaryOp, BinaryOpType, Expr, Literal, Stmt},
+//     lexer, parser,
+// };
 
-pub struct BreakfastJIT {
-    module: JITModule,
-    builder_ctx: FunctionBuilderContext,
-    ctx: codegen::Context,
-    data_ctx: DataContext,
-}
+// pub fn generate_code(source: &str) -> Result<*const u8, String> {
+//     match lexer::lex_tokens(source.to_string()) {
+//         Ok(tokens) => match parser::parse(tokens) {
+//             Ok(ast) => {
+//                 let mut jit = BreakfastJIT::new();
+//                 match jit.compile(ast) {
+//                     Ok(ptr) => Ok(ptr),
+//                     Err(err) => Err(format!("Error generating code: {}", err)),
+//                 }
+//             }
+//             Err(err) => Err(format!("ParserError: {:?}", err)),
+//         },
+//         Err(err) => Err(format!(
+//             "LexerError: {} on line {} col {}",
+//             err.message, err.line, err.col
+//         )),
+//     }
+// }
 
-impl BreakfastJIT {
-    pub fn new() -> Self {
-        let builder = JITBuilder::new(cranelift_module::default_libcall_names()).unwrap();
-        let module = JITModule::new(builder);
-        Self {
-            builder_ctx: FunctionBuilderContext::new(),
-            data_ctx: DataContext::new(),
-            ctx: module.make_context(),
-            module,
-        }
-    }
+// pub struct BreakfastJIT {
+//     module: JITModule,
+//     builder_ctx: FunctionBuilderContext,
+//     ctx: codegen::Context,
+//     data_ctx: DataContext,
+// }
 
-    pub fn compile(&mut self, stmts: Vec<Stmt>) -> Result<*const u8, String> {
-        self.translate(stmts)?;
+// impl BreakfastJIT {
+//     pub fn new() -> Self {
+//         let builder = JITBuilder::new(cranelift_module::default_libcall_names()).unwrap();
+//         let module = JITModule::new(builder);
+//         Self {
+//             builder_ctx: FunctionBuilderContext::new(),
+//             data_ctx: DataContext::new(),
+//             ctx: module.make_context(),
+//             module,
+//         }
+//     }
 
-        // self.ctx
-        //     .func
-        //     .signature
-        //     .returns
-        //     .push(AbiParam::new(types::F64));
+//     pub fn compile(&mut self, stmts: Vec<Stmt>) -> Result<*const u8, String> {
+//         self.translate(stmts)?;
 
-        let id = self
-            .module
-            .declare_function("main", Linkage::Export, &self.ctx.func.signature)
-            .map_err(|err| err.to_string())?;
+//         // self.ctx
+//         //     .func
+//         //     .signature
+//         //     .returns
+//         //     .push(AbiParam::new(types::F64));
 
-        let func = self
-            .module
-            .define_function(id, &mut self.ctx)
-            .map_err(|err| err.to_string())?;
+//         let id = self
+//             .module
+//             .declare_function("main", Linkage::Export, &self.ctx.func.signature)
+//             .map_err(|err| err.to_string())?;
 
-        self.module.clear_context(&mut self.ctx);
+//         let func = self
+//             .module
+//             .define_function(id, &mut self.ctx)
+//             .map_err(|err| err.to_string())?;
 
-        self.module.finalize_definitions();
+//         self.module.clear_context(&mut self.ctx);
 
-        let code = self.module.get_finalized_function(id);
+//         self.module.finalize_definitions();
 
-        Ok(code)
-    }
+//         let code = self.module.get_finalized_function(id);
 
-    pub fn translate(&mut self, stmts: Vec<Stmt>) -> Result<(), String> {
-        let ptr = self.module.target_config().pointer_type();
+//         Ok(code)
+//     }
 
-        let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
+//     pub fn translate(&mut self, stmts: Vec<Stmt>) -> Result<(), String> {
+//         let ptr = self.module.target_config().pointer_type();
 
-        let entry_block = builder.create_block();
+//         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
 
-        builder.append_block_params_for_function_params(entry_block);
+//         let entry_block = builder.create_block();
 
-        builder.switch_to_block(entry_block);
+//         builder.append_block_params_for_function_params(entry_block);
 
-        builder.seal_block(entry_block);
+//         builder.switch_to_block(entry_block);
 
-        let mut trans = Translator {
-            ptr,
-            builder,
-            variables: HashMap::new(),
-            module: &mut self.module,
-            data_ctx: &mut self.data_ctx,
-        };
+//         builder.seal_block(entry_block);
 
-        for stmt in stmts {
-            trans.translate_stmt(stmt);
-        }
+//         let mut trans = Translator {
+//             ptr,
+//             builder,
+//             variables: HashMap::new(),
+//             module: &mut self.module,
+//             data_ctx: &mut self.data_ctx,
+//         };
 
-        // trans.builder.ins().return_(&[]);
+//         for stmt in stmts {
+//             trans.translate_stmt(stmt);
+//         }
 
-        trans.builder.finalize();
+//         // trans.builder.ins().return_(&[]);
 
-        match codegen::verify_function(&self.ctx.func, self.module.isa()) {
-            Ok(()) => {}
-            Err(err) => {
-                panic!("Verifier errors: {}", err);
-            }
-        }
+//         trans.builder.finalize();
 
-        println!("IR: \n{:?}", self.ctx.func);
+//         match codegen::verify_function(&self.ctx.func, self.module.isa()) {
+//             Ok(()) => {}
+//             Err(err) => {
+//                 panic!("Verifier errors: {}", err);
+//             }
+//         }
 
-        self.output_ir(&mut File::create("intermediate.clif").expect("Failed to create file"));
+//         println!("IR: \n{:?}", self.ctx.func);
 
-        Ok(())
-    }
+//         self.output_ir(&mut File::create("intermediate.clif").expect("Failed to create file"));
 
-    fn output_ir(&self, file: &mut File) {
-        file.write(format!("{:?}", self.ctx.func).as_bytes())
-            .expect("Error when writing IR to file.");
-    }
-}
+//         Ok(())
+//     }
 
-struct Translator<'a> {
-    ptr: types::Type,
-    builder: FunctionBuilder<'a>,
-    variables: HashMap<String, Variable>,
-    module: &'a mut JITModule,
-    data_ctx: &'a mut DataContext,
-}
+//     fn output_ir(&self, file: &mut File) {
+//         file.write(format!("{:?}", self.ctx.func).as_bytes())
+//             .expect("Error when writing IR to file.");
+//     }
+// }
 
-impl<'a> Translator<'a> {
-    fn translate_stmt(&mut self, stmt: Stmt) {
-        match stmt {
-            Stmt::Expr(expr) => {
-                self.translate_expr(expr);
-            }
-            Stmt::Return(_, expr) => match expr {
-                Some(expr) => {
-                    let val = self.translate_expr(expr);
-                    self.builder.ins().return_(&[val]);
-                }
-                None => {
-                    self.builder.ins().return_(&[]);
-                }
-            },
-            Stmt::Block(stmts) => {}
-            _ => todo!(),
-        }
-    }
+// struct Translator<'a> {
+//     ptr: types::Type,
+//     builder: FunctionBuilder<'a>,
+//     variables: HashMap<String, Variable>,
+//     module: &'a mut JITModule,
+//     data_ctx: &'a mut DataContext,
+// }
 
-    fn translate_expr(&mut self, expr: Expr) -> Value {
-        match expr {
-            Expr::Binary(lhs, op, rhs) => self.translate_binary(lhs, op, rhs),
-            Expr::Literal(literal) => self.translate_literal(literal),
+// impl<'a> Translator<'a> {
+//     fn translate_stmt(&mut self, stmt: Stmt) {
+//         match stmt {
+//             Stmt::Expr(expr) => {
+//                 self.translate_expr(expr);
+//             }
+//             Stmt::Return(_, expr) => match expr {
+//                 Some(expr) => {
+//                     let val = self.translate_expr(expr);
+//                     self.builder.ins().return_(&[val]);
+//                 }
+//                 None => {
+//                     self.builder.ins().return_(&[]);
+//                 }
+//             },
+//             Stmt::Block(stmts) => {}
+//             _ => todo!(),
+//         }
+//     }
 
-            _ => unimplemented!("Stop using unimplemented instructions {:?}", expr),
-        }
-    }
+//     fn translate_expr(&mut self, expr: Expr) -> Value {
+//         match expr {
+//             Expr::Binary(lhs, op, rhs) => self.translate_binary(lhs, op, rhs),
+//             Expr::Literal(literal) => self.translate_literal(literal),
 
-    fn translate_binary(&mut self, lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>) -> Value {
-        let lhs = self.translate_expr(*lhs);
-        let rhs = self.translate_expr(*rhs);
-        match op.op_type {
-            BinaryOpType::Plus => self.builder.ins().fadd(lhs, rhs),
-            BinaryOpType::Minus => self.builder.ins().fsub(lhs, rhs),
-            BinaryOpType::Star => self.builder.ins().fmul(lhs, rhs),
-            BinaryOpType::Slash => self.builder.ins().fdiv(lhs, rhs),
-            BinaryOpType::EqualEqualTaste => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
-            BinaryOpType::GreaterThanTastier => {
-                self.builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs)
-            }
-            BinaryOpType::LessThanTasteless => self.builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
-        }
-    }
+//             _ => unimplemented!("Stop using unimplemented instructions {:?}", expr),
+//         }
+//     }
 
-    fn translate_literal(&mut self, literal: Literal) -> Value {
-        match literal {
-            Literal::False => self.builder.ins().bconst(self.ptr, false),
-            Literal::True => self.builder.ins().bconst(self.ptr, true),
-            Literal::Number(num) => self.builder.ins().f64const(num),
-            Literal::String(str) => self.translate_string(str),
-            Literal::Null => self.builder.ins().null(self.ptr),
-        }
-    }
+//     fn translate_binary(&mut self, lhs: Box<Expr>, op: BinaryOp, rhs: Box<Expr>) -> Value {
+//         let lhs = self.translate_expr(*lhs);
+//         let rhs = self.translate_expr(*rhs);
+//         match op.op_type {
+//             BinaryOpType::Plus => self.builder.ins().fadd(lhs, rhs),
+//             BinaryOpType::Minus => self.builder.ins().fsub(lhs, rhs),
+//             BinaryOpType::Star => self.builder.ins().fmul(lhs, rhs),
+//             BinaryOpType::Slash => self.builder.ins().fdiv(lhs, rhs),
+//             BinaryOpType::EqualEqualTaste => self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
+//             BinaryOpType::GreaterThanTastier => {
+//                 self.builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs)
+//             }
+//             BinaryOpType::LessThanTasteless => self.builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
+//         }
+//     }
 
-    fn translate_string(&mut self, string: String) -> Value {
-        let mut str = string.clone();
-        str.push('\0');
-        self.data_ctx.define(str.into_bytes().into_boxed_slice());
-        let id = self
-            .module
-            .declare_anonymous_data(true, false)
-            .map_err(|err| err.to_string())
-            .unwrap();
+//     fn translate_literal(&mut self, literal: Literal) -> Value {
+//         match literal {
+//             Literal::False => self.builder.ins().bconst(self.ptr, false),
+//             Literal::True => self.builder.ins().bconst(self.ptr, true),
+//             Literal::Number(num) => self.builder.ins().f64const(num),
+//             Literal::String(str) => self.translate_string(str),
+//             Literal::Null => self.builder.ins().null(self.ptr),
+//         }
+//     }
 
-        self.module
-            .define_data(id, &self.data_ctx)
-            .map_err(|err| err.to_string())
-            .unwrap();
-        self.data_ctx.clear();
-        self.module.finalize_definitions();
-        let local_id = self.module.declare_data_in_func(id, &mut self.builder.func);
-        self.builder.ins().symbol_value(self.ptr, local_id)
-    }
-}
+//     fn translate_string(&mut self, string: String) -> Value {
+//         let mut str = string.clone();
+//         str.push('\0');
+//         self.data_ctx.define(str.into_bytes().into_boxed_slice());
+//         let id = self
+//             .module
+//             .declare_anonymous_data(true, false)
+//             .map_err(|err| err.to_string())
+//             .unwrap();
 
-#[cfg(test)]
-mod tests {
-    use super::generate_code;
+//         self.module
+//             .define_data(id, &self.data_ctx)
+//             .map_err(|err| err.to_string())
+//             .unwrap();
+//         self.data_ctx.clear();
+//         self.module.finalize_definitions();
+//         let local_id = self.module.declare_data_in_func(id, &mut self.builder.func);
+//         self.builder.ins().symbol_value(self.ptr, local_id)
+//     }
+// }
 
-    #[test]
-    fn test() -> Result<(), String> {
-        let code = generate_code("plate 5#")?;
-        let func = unsafe { std::mem::transmute::<_, fn() -> f64>(code) };
-        println!("{}", func());
-        Ok(())
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::generate_code;
+
+//     #[test]
+//     fn test() -> Result<(), String> {
+//         let code = generate_code("plate 5#")?;
+//         let func = unsafe { std::mem::transmute::<_, fn() -> f64>(code) };
+//         println!("{}", func());
+//         Ok(())
+//     }
+// }

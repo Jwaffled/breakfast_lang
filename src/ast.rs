@@ -25,16 +25,40 @@ pub enum Stmt {
     If(Expr, Box<Stmt>, Option<Box<Stmt>>),
     FunDecl(FunDecl),
     Return(SourceLocation, Option<Expr>),
-    VarDecl(Symbol, Option<Symbol>, Option<Expr>),
+    VarDecl(Symbol, Option<TypeAnnotation>, Option<Expr>),
     Block(Vec<Stmt>),
     While(Expr, Box<Stmt>, /* invert condition? */ bool),
     StructDecl(StructDecl),
 }
 
 #[derive(Debug, Clone)]
+pub enum TypeAnnotation {
+    Number,
+    String,
+    Bool,
+    Void,
+    Struct(Symbol),
+    Function(Option<Symbol>, Vec<TypeAnnotation>, Box<TypeAnnotation>),
+    Array(Box<TypeAnnotation>),
+}
+
+#[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: Symbol,
     pub fields: Vec<Stmt>,
+}
+
+impl StructDecl {
+    pub(crate) fn create_native(name: String) -> Self {
+        Self {
+            name: Symbol {
+                name,
+                line: 0,
+                col: 0,
+            },
+            fields: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,8 +86,9 @@ pub struct Symbol {
 #[derive(Debug, Clone)]
 pub struct FunDecl {
     pub name: Symbol,
-    pub params: Vec<Symbol>,
+    pub params: Vec<(/* arg token */ Symbol, /* arg type */ TypeAnnotation)>,
     pub body: Vec<Stmt>,
+    pub ret_ty: TypeAnnotation,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +104,18 @@ pub struct UnaryOp {
     pub col: i64,
 }
 
+impl std::fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::ast::UnaryOpType::*;
+        let string = match self.op_type {
+            Not => "ain't",
+            Minus => "-",
+        };
+
+        write!(f, "{}", string)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOpType {
     Plus,
@@ -88,6 +125,23 @@ pub enum BinaryOpType {
     EqualEqualTaste,
     LessThanTasteless,
     GreaterThanTastier,
+}
+
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::ast::BinaryOpType::*;
+        let string = match self.op_type {
+            Plus => "+",
+            Minus => "-",
+            Star => "*",
+            Slash => "/",
+            EqualEqualTaste => "taste",
+            LessThanTasteless => "tasteless",
+            GreaterThanTastier => "tastier",
+        };
+
+        write!(f, "{}", string)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

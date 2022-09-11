@@ -52,6 +52,12 @@ pub enum TokenType {
     ForCookUntil,
     ForStir,
 
+    // Type names
+    BoolTexture,
+    StringSmoothie,
+    NumberCal,
+    VoidEmpty,
+
     // End of file
     Eof,
 }

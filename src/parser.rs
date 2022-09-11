@@ -1,11 +1,14 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
-use crate::ast;
+use crate::ast::{
+    BinaryOp, BinaryOpType, Expr, FunDecl, Literal, LogicalOpType, SourceLocation, Stmt,
+    StructDecl, Symbol, TypeAnnotation, UnaryOp, UnaryOpType,
+};
 use crate::tokens;
 use crate::tokens::{Token, TokenType};
 
-pub fn parse(tokens: Vec<Token>) -> Result<Vec<ast::Stmt>, ParserError> {
+pub fn parse(tokens: Vec<Token>) -> Result<Vec<Stmt>, ParserError> {
     let mut parser = Parser::new(tokens);
     parser.parse()
 }
@@ -50,6 +53,10 @@ pub enum ParserError {
     },
     InvalidTokenInBinaryOp {
         token_type: TokenType,
+        line: usize,
+        col: i64,
+    },
+    ExpectedTypeToken {
         line: usize,
         col: i64,
     },
@@ -144,13 +151,21 @@ impl Debug for ParserError {
                     message, line, col
                 )?;
             }
+            Self::ExpectedTypeToken { line, col } => {
+                write!(f, "Expected a type name on line {} col {}", line, col)?;
+            }
         }
 
         Ok(())
     }
 }
 
-struct Parser {
+type FnArgument = (
+    /* Variable name */ Symbol,
+    /* Type argument */ TypeAnnotation,
+);
+
+pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
     in_function: bool,
@@ -242,7 +257,7 @@ impl Parser {
         }
     }
 
-    fn parse(&mut self) -> Result<Vec<ast::Stmt>, ParserError> {
+    pub fn parse(&mut self) -> Result<Vec<Stmt>, ParserError> {
         let mut statements = Vec::new();
 
         while !self.is_at_end() {
@@ -252,7 +267,7 @@ impl Parser {
         Ok(statements)
     }
 
-    fn declaration(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn declaration(&mut self) -> Result<Stmt, ParserError> {
         /*
             declaration -> fnDecl
             | statement
@@ -260,7 +275,7 @@ impl Parser {
             | structDecl;
         */
         if self.match_token(TokenType::FunctionPancake) {
-            return Ok(ast::Stmt::FunDecl(self.fun_decl()?));
+            return Ok(Stmt::FunDecl(self.fun_decl()?));
         }
 
         if self.match_token(TokenType::VarFood) {
@@ -274,29 +289,33 @@ impl Parser {
         self.statement()
     }
 
-    fn fun_decl(&mut self) -> Result<ast::FunDecl, ParserError> {
+    fn fun_decl(&mut self) -> Result<FunDecl, ParserError> {
         let name = self.consume(
             TokenType::Identifier,
             "Expected function name after 'pancake' keyword",
         )?;
 
-        let func_symbol = ast::Symbol {
+        let func_symbol = Symbol {
             name: name.lexeme.clone(),
             line: name.line,
             col: name.col,
         };
 
-        let (params, body) = self.fun_params_and_body()?;
+        let (params, body, ret_ty) = self.fun_params_and_body()?;
 
-        Ok(ast::FunDecl {
+        Ok(FunDecl {
             name: func_symbol,
             params,
             body,
+            ret_ty,
         })
     }
 
-    fn fun_params_and_body(&mut self) -> Result<(Vec<ast::Symbol>, Vec<ast::Stmt>), ParserError> {
-        self.consume(TokenType::LeftParen, "Expected '(' after function name")?;
+    fn fun_params_and_ret(&mut self) -> Result<(Vec<FnArgument>, TypeAnnotation), ParserError> {
+        self.consume(
+            TokenType::LeftParen,
+            "Expected '(' after function declaration",
+        )?;
 
         let mut params = Vec::new();
 
@@ -316,11 +335,18 @@ impl Parser {
                     )?
                     .clone();
 
-                params.push(ast::Symbol {
-                    name: param.lexeme,
-                    line: param.line,
-                    col: param.col,
-                });
+                self.consume(TokenType::Colon, "Expected ':' to type parameter")?;
+
+                let param_ty = self.consume_type_annotation()?;
+
+                params.push((
+                    Symbol {
+                        name: param.lexeme,
+                        line: param.line,
+                        col: param.col,
+                    },
+                    param_ty,
+                ));
 
                 if !self.match_token(TokenType::Comma) {
                     break;
@@ -333,6 +359,17 @@ impl Parser {
             "Expected ')' after function parameters",
         )?;
 
+        self.consume(TokenType::Colon, "Expected ':' for function return type")?;
+
+        let ret_ty = self.consume_type_annotation()?;
+        Ok((params, ret_ty))
+    }
+
+    fn fun_params_and_body(
+        &mut self,
+    ) -> Result<(Vec<FnArgument>, Vec<Stmt>, TypeAnnotation), ParserError> {
+        let (params, ret_ty) = self.fun_params_and_ret()?;
+
         self.consume(
             TokenType::OpenScopeBar,
             "Expected '|>' before function body",
@@ -341,15 +378,15 @@ impl Parser {
         self.in_function = true;
         let body = self.block()?;
         self.in_function = false;
-        Ok((params, body))
+        Ok((params, body, ret_ty))
     }
 
-    fn struct_decl(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn struct_decl(&mut self) -> Result<Stmt, ParserError> {
         let name_tok = self
             .consume(TokenType::Identifier, "Expected struct name")?
             .clone();
 
-        let struct_symbol = ast::Symbol {
+        let struct_symbol = Symbol {
             name: name_tok.lexeme,
             line: name_tok.line,
             col: name_tok.col,
@@ -365,37 +402,31 @@ impl Parser {
 
         self.consume(TokenType::CloseScopeBar, "Expected '<|' after struct body")?;
 
-        Ok(ast::Stmt::StructDecl(ast::StructDecl {
+        Ok(Stmt::StructDecl(StructDecl {
             name: struct_symbol,
             fields,
         }))
     }
 
-    fn var_decl(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn var_decl(&mut self) -> Result<Stmt, ParserError> {
         let name_tok = self
             .consume(TokenType::Identifier, "Expected variable name")?
             .clone();
 
-        let maybe_init = if self.match_token(TokenType::AssignFork) {
-            Some(self.expression()?)
+        let maybe_type_ann = if self.match_token(TokenType::Colon) {
+            let type_ann_token = self.consume_type_annotation()?;
+
+            // TODO: Support parsing things like string[][][], create TypeAnnotation type in ast.rs
+
+            Some(type_ann_token)
         } else {
             None
         };
 
-        let maybe_type_ann = if maybe_init.is_none() {
-            self.consume(
-                TokenType::Colon,
-                "Expected type annotation for variable without initializer expression.",
-            )?;
-            let type_ann_token = self
-                .consume(TokenType::Identifier, "Expected type name after colon")?
-                .clone();
+        println!("type ann: {:?}", maybe_type_ann);
 
-            Some(ast::Symbol {
-                name: type_ann_token.lexeme,
-                line: type_ann_token.line,
-                col: type_ann_token.col,
-            })
+        let maybe_init = if self.match_token(TokenType::AssignFork) {
+            Some(self.expression()?)
         } else {
             None
         };
@@ -405,8 +436,8 @@ impl Parser {
             "Expected '#' after variable declaration",
         )?;
 
-        Ok(ast::Stmt::VarDecl(
-            ast::Symbol {
+        Ok(Stmt::VarDecl(
+            Symbol {
                 name: name_tok.lexeme,
                 line: name_tok.line,
                 col: name_tok.col,
@@ -416,7 +447,7 @@ impl Parser {
         ))
     }
 
-    fn statement(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn statement(&mut self) -> Result<Stmt, ParserError> {
         /*
             statement -> exprStmt
             | printStmt
@@ -444,7 +475,7 @@ impl Parser {
         }
 
         if self.match_token(TokenType::OpenScopeBar) {
-            return Ok(ast::Stmt::Block(self.block()?));
+            return Ok(Stmt::Block(self.block()?));
         }
 
         if self.match_token(TokenType::ReturnPlate) {
@@ -458,7 +489,7 @@ impl Parser {
         self.expression_stmt()
     }
 
-    fn for_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn for_stmt(&mut self) -> Result<Stmt, ParserError> {
         /*
             forStmt -> "prepare" "("
             ("preheat" IDENTIFIER "at" expression ";" | ";")
@@ -474,8 +505,8 @@ impl Parser {
             self.consume(TokenType::ForAt, "Expected 'at' after identifier")?;
             let value = self.expression()?;
             self.consume(TokenType::Semicolon, "Expected '#' after expression")?;
-            Some(ast::Stmt::VarDecl(
-                ast::Symbol {
+            Some(Stmt::VarDecl(
+                Symbol {
                     name: name_tok.lexeme,
                     line: name_tok.line,
                     col: name_tok.col,
@@ -511,24 +542,24 @@ impl Parser {
         let mut body = self.statement()?;
 
         if let Some(inc) = maybe_inc {
-            body = ast::Stmt::Block(vec![body, ast::Stmt::Expr(inc)]);
+            body = Stmt::Block(vec![body, Stmt::Expr(inc)]);
         }
 
         let condition = match maybe_cond {
             Some(cond) => cond,
-            None => ast::Expr::Literal(ast::Literal::True),
+            None => Expr::Literal(Literal::True),
         };
-        body = ast::Stmt::While(condition, Box::new(body), false);
+        body = Stmt::While(condition, Box::new(body), false);
 
         if let Some(init) = maybe_init {
-            body = ast::Stmt::Block(vec![init, body])
+            body = Stmt::Block(vec![init, body])
         }
         let body = body;
 
         Ok(body)
     }
 
-    fn while_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn while_stmt(&mut self) -> Result<Stmt, ParserError> {
         /*
             whileStmt -> "flipwhen" "(" expression ")" statement;
         */
@@ -537,10 +568,10 @@ impl Parser {
         self.consume(TokenType::RightParen, "Expected ')' after condition")?;
         let body = Box::new(self.statement()?);
 
-        Ok(ast::Stmt::While(condition, body, false))
+        Ok(Stmt::While(condition, body, false))
     }
 
-    fn if_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn if_stmt(&mut self) -> Result<Stmt, ParserError> {
         /*
             ifStmt -> "if" "(" expression ")" statement ("else" statement)?;
         */
@@ -554,10 +585,10 @@ impl Parser {
             None
         };
 
-        Ok(ast::Stmt::If(condition, then_branch, else_branch))
+        Ok(Stmt::If(condition, then_branch, else_branch))
     }
 
-    fn do_while_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn do_while_stmt(&mut self) -> Result<Stmt, ParserError> {
         /*
         doWhileStmt -> "mix" statement "until(" expression ");";
         */
@@ -572,10 +603,10 @@ impl Parser {
         )?;
         self.consume(TokenType::Semicolon, "Expected ';' after 'until' condition")?;
 
-        Ok(ast::Stmt::While(condition, Box::new(body), true))
+        Ok(Stmt::While(condition, Box::new(body), true))
     }
 
-    fn block(&mut self) -> Result<Vec<ast::Stmt>, ParserError> {
+    fn block(&mut self) -> Result<Vec<Stmt>, ParserError> {
         let mut statements = Vec::new();
 
         while !self.check(TokenType::CloseScopeBar) && !self.is_at_end() {
@@ -587,7 +618,7 @@ impl Parser {
         Ok(statements)
     }
 
-    fn return_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn return_stmt(&mut self) -> Result<Stmt, ParserError> {
         let prev_tok = self.previous().clone();
 
         if !self.in_function {
@@ -607,8 +638,8 @@ impl Parser {
             self.consume(TokenType::Semicolon, "Expected '#' after return value.")?;
         }
 
-        Ok(ast::Stmt::Return(
-            ast::SourceLocation {
+        Ok(Stmt::Return(
+            SourceLocation {
                 line: prev_tok.line,
                 col: prev_tok.col,
             },
@@ -616,13 +647,13 @@ impl Parser {
         ))
     }
 
-    fn print_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn print_stmt(&mut self) -> Result<Stmt, ParserError> {
         let value = self.expression()?;
         self.consume(TokenType::Semicolon, "Expected '#' after expression.")?;
-        Ok(ast::Stmt::Print(value))
+        Ok(Stmt::Print(value))
     }
 
-    fn expression_stmt(&mut self) -> Result<ast::Stmt, ParserError> {
+    fn expression_stmt(&mut self) -> Result<Stmt, ParserError> {
         let expr = self.expression()?;
 
         self.consume(
@@ -630,14 +661,14 @@ impl Parser {
             "Expected '#' after expression statement.",
         )?;
 
-        Ok(ast::Stmt::Expr(expr))
+        Ok(Stmt::Expr(expr))
     }
 
-    fn expression(&mut self) -> Result<ast::Expr, ParserError> {
+    fn expression(&mut self) -> Result<Expr, ParserError> {
         self.assignment()
     }
 
-    fn assignment(&mut self) -> Result<ast::Expr, ParserError> {
+    fn assignment(&mut self) -> Result<Expr, ParserError> {
         /*
            assignment -> (call ".")? IDENTIFIER "==E" assignment
         | logic_or;
@@ -648,10 +679,10 @@ impl Parser {
             let fork = self.previous().clone();
             let new_val = self.assignment()?;
 
-            if let ast::Expr::Variable(name) = &expr {
-                return Ok(ast::Expr::Assign(name.clone(), Box::new(new_val)));
-            } else if let ast::Expr::Get(e, attr) = expr {
-                return Ok(ast::Expr::Set(e, attr, Box::new(new_val)));
+            if let Expr::Variable(name) = &expr {
+                return Ok(Expr::Assign(name.clone(), Box::new(new_val)));
+            } else if let Expr::Get(e, attr) = expr {
+                return Ok(Expr::Set(e, attr, Box::new(new_val)));
             } else {
                 return Err(ParserError::InvalidAssignment {
                     line: fork.line,
@@ -663,97 +694,93 @@ impl Parser {
         Ok(expr)
     }
 
-    fn logic_or(&mut self) -> Result<ast::Expr, ParserError> {
+    fn logic_or(&mut self) -> Result<Expr, ParserError> {
         // logic_or -> logic_and ("chop" logic_and)*;
         let mut expr = self.logic_and()?;
         while self.match_token(TokenType::OrChop) {
             let right = self.logic_and()?;
-            expr = ast::Expr::Logical(Box::new(expr), ast::LogicalOpType::OrChop, Box::new(right));
+            expr = Expr::Logical(Box::new(expr), LogicalOpType::OrChop, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn logic_and(&mut self) -> Result<ast::Expr, ParserError> {
+    fn logic_and(&mut self) -> Result<Expr, ParserError> {
         // logic_and -> equality ("blend" equality)*;
         let mut expr = self.equality()?;
         while self.match_token(TokenType::AndBlend) {
             let right = self.equality()?;
-            expr = ast::Expr::Logical(
-                Box::new(expr),
-                ast::LogicalOpType::AndBlend,
-                Box::new(right),
-            );
+            expr = Expr::Logical(Box::new(expr), LogicalOpType::AndBlend, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn equality(&mut self) -> Result<ast::Expr, ParserError> {
+    fn equality(&mut self) -> Result<Expr, ParserError> {
         // equality -> comparison ( ("taste") comparison)*;
         let mut expr = self.comparison()?;
         while self.matches_one([TokenType::EqualEqualTaste]) {
             let operator = self.previous().clone(); // Not necessary, I just might add in a not equal operator later
             let right = self.comparison()?;
             let op_type = Parser::binary_op_type(&operator)?;
-            expr = ast::Expr::Binary(Box::new(expr), op_type, Box::new(right));
+            expr = Expr::Binary(Box::new(expr), op_type, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn comparison(&mut self) -> Result<ast::Expr, ParserError> {
+    fn comparison(&mut self) -> Result<Expr, ParserError> {
         // comparison -> addition ( ("tasteless" | "tastier") addition)*;
         let mut expr = self.addition()?;
         while self.matches_one([TokenType::LessThanTasteless, TokenType::GreaterThanTastier]) {
             let operator = self.previous().clone();
             let right = self.addition()?;
             let op_type = Parser::binary_op_type(&operator)?;
-            expr = ast::Expr::Binary(Box::new(expr), op_type, Box::new(right));
+            expr = Expr::Binary(Box::new(expr), op_type, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn addition(&mut self) -> Result<ast::Expr, ParserError> {
+    fn addition(&mut self) -> Result<Expr, ParserError> {
         // addition -> multiplication ( ("+" | "-") multiplication)*;
         let mut expr = self.multiplication()?;
         while self.matches_one([TokenType::Plus, TokenType::Minus]) {
             let operator = self.previous().clone();
             let right = self.multiplication()?;
             let op_type = Parser::binary_op_type(&operator)?;
-            expr = ast::Expr::Binary(Box::new(expr), op_type, Box::new(right));
+            expr = Expr::Binary(Box::new(expr), op_type, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn multiplication(&mut self) -> Result<ast::Expr, ParserError> {
+    fn multiplication(&mut self) -> Result<Expr, ParserError> {
         // muliplication -> unary ( ("*" | "/") unary)*;
         let mut expr = self.unary()?;
         while self.matches_one([TokenType::Star, TokenType::Slash]) {
             let operator = self.previous().clone();
             let right = self.unary()?;
             let op_type = Parser::binary_op_type(&operator)?;
-            expr = ast::Expr::Binary(Box::new(expr), op_type, Box::new(right));
+            expr = Expr::Binary(Box::new(expr), op_type, Box::new(right));
         }
 
         Ok(expr)
     }
 
-    fn unary(&mut self) -> Result<ast::Expr, ParserError> {
+    fn unary(&mut self) -> Result<Expr, ParserError> {
         // unary -> ("not" | "-") unary | call;
         if self.matches_one([TokenType::Not, TokenType::Minus]) {
             let operator = self.previous().clone();
             let right = self.unary()?;
             let op_type = Parser::unary_op_type(&operator)?;
-            return Ok(ast::Expr::Unary(op_type, Box::new(right)));
+            return Ok(Expr::Unary(op_type, Box::new(right)));
         }
 
         self.call()
     }
 
-    fn call(&mut self) -> Result<ast::Expr, ParserError> {
+    fn call(&mut self) -> Result<Expr, ParserError> {
         // call -> primary ( "(" arguments? ")" | "." IDENTIFIER | "[" expression "]")*;
         let mut expr = self.primary()?;
         loop {
@@ -764,9 +791,9 @@ impl Parser {
                     .consume(TokenType::Identifier, "Expected field name after '.'")?
                     .clone();
 
-                expr = ast::Expr::Get(
+                expr = Expr::Get(
                     Box::new(expr),
-                    ast::Symbol {
+                    Symbol {
                         name: name.lexeme,
                         line: name.line,
                         col: name.col,
@@ -780,10 +807,10 @@ impl Parser {
                     "Expected ']' after array index expression.",
                 )?;
 
-                expr = ast::Expr::Subscript {
+                expr = Expr::Subscript {
                     value: Box::new(expr),
                     slice: Box::new(slice_expr),
-                    source_location: ast::SourceLocation {
+                    source_location: SourceLocation {
                         line: token.line,
                         col: token.col,
                     },
@@ -796,7 +823,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn finish_call(&mut self, expr: ast::Expr) -> Result<ast::Expr, ParserError> {
+    fn finish_call(&mut self, expr: Expr) -> Result<Expr, ParserError> {
         let mut arguments = Vec::new();
 
         if !self.check(TokenType::RightParen) {
@@ -821,9 +848,9 @@ impl Parser {
             "Expected ')' after arguments in function call.",
         )?;
 
-        Ok(ast::Expr::Call(
+        Ok(Expr::Call(
             Box::new(expr),
-            ast::SourceLocation {
+            SourceLocation {
                 line: paren.line,
                 col: paren.col,
             },
@@ -831,7 +858,7 @@ impl Parser {
         ))
     }
 
-    fn primary(&mut self) -> Result<ast::Expr, ParserError> {
+    fn primary(&mut self) -> Result<Expr, ParserError> {
         /*
         primary -> "crispy" (true)
         |  "raw" (false)
@@ -843,21 +870,21 @@ impl Parser {
         | "(" expression ")";
         */
         if self.match_token(TokenType::TrueCrispy) {
-            return Ok(ast::Expr::Literal(ast::Literal::True));
+            return Ok(Expr::Literal(Literal::True));
         }
 
         if self.match_token(TokenType::FalseRaw) {
-            return Ok(ast::Expr::Literal(ast::Literal::False));
+            return Ok(Expr::Literal(Literal::False));
         }
 
         if self.match_token(TokenType::NullBurnt) {
-            return Ok(ast::Expr::Literal(ast::Literal::Null));
+            return Ok(Expr::Literal(Literal::Null));
         }
 
         if self.match_token(TokenType::Number) {
             match &self.previous().literal {
                 Some(tokens::Literal::Number(n)) => {
-                    return Ok(ast::Expr::Literal(ast::Literal::Number(*n)));
+                    return Ok(Expr::Literal(Literal::Number(*n)));
                 }
                 Some(other) => {
                     panic!(
@@ -877,13 +904,13 @@ impl Parser {
                 TokenType::RightParen,
                 "Expected ')' after grouping expression.",
             )?;
-            return Ok(ast::Expr::Grouping(Box::new(expr)));
+            return Ok(Expr::Grouping(Box::new(expr)));
         }
 
         if self.match_token(TokenType::String) {
             match &self.previous().literal {
                 Some(tokens::Literal::String(s)) => {
-                    return Ok(ast::Expr::Literal(ast::Literal::String(s.clone())));
+                    return Ok(Expr::Literal(Literal::String(s.clone())));
                 }
                 Some(other) => {
                     panic!(
@@ -900,7 +927,7 @@ impl Parser {
         if self.match_token(TokenType::Identifier) {
             match &self.previous().literal {
                 Some(tokens::Literal::Identifier(s)) => {
-                    return Ok(ast::Expr::Variable(ast::Symbol {
+                    return Ok(Expr::Variable(Symbol {
                         name: s.clone(),
                         line: self.previous().line,
                         col: self.previous().col,
@@ -932,7 +959,7 @@ impl Parser {
                 TokenType::RightBracket,
                 "Expected ']' after array elements.",
             )?;
-            return Ok(ast::Expr::List(elements));
+            return Ok(Expr::List(elements));
         }
 
         Err(ParserError::ExpectedExpression {
@@ -962,6 +989,62 @@ impl Parser {
                 on_error: Some(error_msg.to_string()),
             })
         }
+    }
+
+    fn consume_type(&mut self) -> Result<TypeAnnotation, ParserError> {
+        let current = self.advance().clone();
+
+        let matches = match current.token_type {
+            TokenType::BoolTexture => Some(TypeAnnotation::Bool),
+            TokenType::StringSmoothie => Some(TypeAnnotation::String),
+            TokenType::NumberCal => Some(TypeAnnotation::Number),
+            TokenType::VoidEmpty => Some(TypeAnnotation::Void),
+            TokenType::FunctionPancake => {
+                let (params, ret_ty) = self.fun_params_and_ret()?;
+                let arg_tys = params.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
+                Some(TypeAnnotation::Function(None, arg_tys, Box::new(ret_ty)))
+            }
+            TokenType::Identifier => Some(TypeAnnotation::Struct(Symbol {
+                name: current.lexeme,
+                line: current.line,
+                col: current.col,
+            })),
+            _ => None,
+        };
+
+        if let Some(ann) = matches {
+            Ok(ann)
+        } else {
+            Err(ParserError::ExpectedTypeToken {
+                line: current.line,
+                col: current.col,
+            })
+        }
+    }
+
+    fn consume_type_annotation(&mut self) -> Result<TypeAnnotation, ParserError> {
+        /*
+        TypeAnn -> TypeAnn "[]"* | ident | "cal" | "smoothie" | "texture" | "empty" | "pancake" "(" arguments? "):" TypeAnn
+        */
+        let mut ty_tok = self.consume_type()?;
+
+        while self.match_token(TokenType::LeftBracket) {
+            if matches!(ty_tok, TypeAnnotation::Void) {
+                let curr = self.get_current();
+                return Err(ParserError::InvalidSyntax {
+                    message: "Type 'empty' cannot be made into an array".to_string(),
+                    line: curr.line,
+                    col: curr.col,
+                });
+            }
+            self.consume(
+                TokenType::RightBracket,
+                "Expected ']' following '[' in type annotation",
+            )?;
+            ty_tok = TypeAnnotation::Array(Box::new(ty_tok));
+        }
+
+        Ok(ty_tok)
     }
 
     fn previous(&self) -> &Token {
@@ -1005,15 +1088,15 @@ impl Parser {
         self.get_current().token_type == TokenType::Eof
     }
 
-    fn unary_op_type(token: &Token) -> Result<ast::UnaryOp, ParserError> {
+    fn unary_op_type(token: &Token) -> Result<UnaryOp, ParserError> {
         match token.token_type {
-            TokenType::Minus => Ok(ast::UnaryOp {
-                op_type: ast::UnaryOpType::Minus,
+            TokenType::Minus => Ok(UnaryOp {
+                op_type: UnaryOpType::Minus,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::Not => Ok(ast::UnaryOp {
-                op_type: ast::UnaryOpType::Not,
+            TokenType::Not => Ok(UnaryOp {
+                op_type: UnaryOpType::Not,
                 line: token.line,
                 col: token.col,
             }),
@@ -1025,40 +1108,40 @@ impl Parser {
         }
     }
 
-    fn binary_op_type(token: &Token) -> Result<ast::BinaryOp, ParserError> {
+    fn binary_op_type(token: &Token) -> Result<BinaryOp, ParserError> {
         match token.token_type {
-            TokenType::Plus => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::Plus,
+            TokenType::Plus => Ok(BinaryOp {
+                op_type: BinaryOpType::Plus,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::Minus => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::Minus,
+            TokenType::Minus => Ok(BinaryOp {
+                op_type: BinaryOpType::Minus,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::Star => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::Star,
+            TokenType::Star => Ok(BinaryOp {
+                op_type: BinaryOpType::Star,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::Slash => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::Slash,
+            TokenType::Slash => Ok(BinaryOp {
+                op_type: BinaryOpType::Slash,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::LessThanTasteless => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::LessThanTasteless,
+            TokenType::LessThanTasteless => Ok(BinaryOp {
+                op_type: BinaryOpType::LessThanTasteless,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::GreaterThanTastier => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::GreaterThanTastier,
+            TokenType::GreaterThanTastier => Ok(BinaryOp {
+                op_type: BinaryOpType::GreaterThanTastier,
                 line: token.line,
                 col: token.col,
             }),
-            TokenType::EqualEqualTaste => Ok(ast::BinaryOp {
-                op_type: ast::BinaryOpType::EqualEqualTaste,
+            TokenType::EqualEqualTaste => Ok(BinaryOp {
+                op_type: BinaryOpType::EqualEqualTaste,
                 line: token.line,
                 col: token.col,
             }),
@@ -1078,7 +1161,14 @@ mod tests {
 
     #[test]
     fn test() {
-        match lexer::lex_tokens("food someVar: String# serve someVar#".to_string()) {
+        match lexer::lex_tokens(
+            r#"
+            pancake fn(arg1: smoothie, arg2: pancake(arg1: cal): smoothie): smoothie[][] |> <|
+            pancake anotherFn(arg1: cal): smoothie |> plate "test" # <|
+            fn("hi", anotherFn)#
+            "#
+            .to_string(),
+        ) {
             Ok(tokens) => {
                 let mut parser = parser::Parser::new(tokens);
                 match parser.parse() {
@@ -1086,6 +1176,7 @@ mod tests {
                         for stmt in stmts {
                             println!("{:#?}", stmt);
                         }
+                        panic!()
                     }
                     Err(e) => {
                         panic!("Parser error: {:?}", e);
