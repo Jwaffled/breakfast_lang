@@ -7,6 +7,5 @@ edition = "2021"
 
 [dependencies]
 phf = { version = "0.11", features = ["macros"] }
-cranelift = "0.86.1"
-cranelift-module = "0.86.1"
-cranelift-jit = "0.86.1"
+cranelift = "0.99.0"
+cranelift-module = "0.99.0"
