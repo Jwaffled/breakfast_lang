@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::fmt::Formatter;
 
+use crate::ast::LogicalOp;
 use crate::ast::{
     BinaryOp, BinaryOpType, Expr, FunDecl, Literal, LogicalOpType, SourceLocation, Stmt,
     StructDecl, Symbol, TypeAnnotation, UnaryOp, UnaryOpType,
@@ -423,8 +424,6 @@ impl Parser {
             None
         };
 
-        println!("type ann: {:?}", maybe_type_ann);
-
         let maybe_init = if self.match_token(TokenType::AssignFork) {
             Some(self.expression()?)
         } else {
@@ -698,8 +697,17 @@ impl Parser {
         // logic_or -> logic_and ("chop" logic_and)*;
         let mut expr = self.logic_and()?;
         while self.match_token(TokenType::OrChop) {
+            let tok = self.get_current().clone();
             let right = self.logic_and()?;
-            expr = Expr::Logical(Box::new(expr), LogicalOpType::OrChop, Box::new(right));
+            expr = Expr::Logical(
+                Box::new(expr),
+                LogicalOp {
+                    op_type: LogicalOpType::OrChop,
+                    line: tok.line,
+                    col: tok.col,
+                },
+                Box::new(right),
+            );
         }
 
         Ok(expr)
@@ -709,8 +717,17 @@ impl Parser {
         // logic_and -> equality ("blend" equality)*;
         let mut expr = self.equality()?;
         while self.match_token(TokenType::AndBlend) {
+            let tok = self.get_current().clone();
             let right = self.equality()?;
-            expr = Expr::Logical(Box::new(expr), LogicalOpType::AndBlend, Box::new(right));
+            expr = Expr::Logical(
+                Box::new(expr),
+                LogicalOp {
+                    op_type: LogicalOpType::AndBlend,
+                    line: tok.line,
+                    col: tok.col,
+                },
+                Box::new(right),
+            );
         }
 
         Ok(expr)

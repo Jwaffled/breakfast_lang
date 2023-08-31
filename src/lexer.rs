@@ -312,10 +312,11 @@ mod tests {
 
     #[test]
     fn test() {
-        match lex_tokens("omelette MyStruct |> someFood: String# otherFood: String# <|".to_string())
-        {
+        match lex_tokens(
+            "omelette MyStruct |> someFood: smoothie# otherFood: String# <|".to_string(),
+        ) {
             Ok(tokens) => {
-                println!("{:?}", tokens);
+                println!("{:#?}", tokens);
             }
             Err(err) => {
                 panic!(

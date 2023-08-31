@@ -4,7 +4,7 @@ pub enum Expr {
     Unary(UnaryOp, Box<Expr>),
     Binary(Box<Expr>, BinaryOp, Box<Expr>),
     Grouping(Box<Expr>),
-    Logical(Box<Expr>, LogicalOpType, Box<Expr>),
+    Logical(Box<Expr>, LogicalOp, Box<Expr>),
     Call(Box<Expr>, SourceLocation, Vec<Expr>),
     Get(Box<Expr>, Symbol),
     Variable(Symbol),
@@ -86,7 +86,10 @@ pub struct Symbol {
 #[derive(Debug, Clone)]
 pub struct FunDecl {
     pub name: Symbol,
-    pub params: Vec<(/* arg token */ Symbol, /* arg type */ TypeAnnotation)>,
+    pub params: Vec<(
+        /* arg token */ Symbol,
+        /* arg type */ TypeAnnotation,
+    )>,
     pub body: Vec<Stmt>,
     pub ret_ty: TypeAnnotation,
 }
@@ -155,4 +158,20 @@ pub struct BinaryOp {
 pub enum LogicalOpType {
     OrChop,
     AndBlend,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LogicalOp {
+    pub op_type: LogicalOpType,
+    pub line: usize,
+    pub col: i64,
+}
+
+impl std::fmt::Display for LogicalOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.op_type {
+            LogicalOpType::OrChop => write!(f, "chop"),
+            LogicalOpType::AndBlend => write!(f, "blend"),
+        }
+    }
 }
