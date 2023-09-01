@@ -5,102 +5,7 @@ use crate::ast::{
     UnaryOp, UnaryOpType,
 };
 
-#[derive(Clone, Debug)]
-enum Value {
-    Number(f64),
-    String(String),
-    Null,
-    Bool(bool),
-    Struct(Symbol, u64),
-    Instance(Symbol, u64),
-    Function(Symbol, u64, Option<Box<Value>>),
-}
-
-// enum LookupResult<'a> {
-//     Ok(&'a Typed<Value>),
-//     UndefButDeclared(SourceLocation),
-//     UndefAndUndeclared,
-// }
-
-// #[derive(Debug)]
-// struct SymbolTable {
-//     symbols: HashMap<String, (Option<Typed<Value>>, SourceLocation)>,
-//     parent: Option<Box<SymbolTable>>,
-// }
-
-// impl SymbolTable {
-//     pub fn new() -> Self {
-//         SymbolTable {
-//             parent: None,
-//             symbols: HashMap::new(),
-//         }
-//     }
-//     pub fn with_enclosing(enclosing: SymbolTable) -> Self {
-//         SymbolTable {
-//             parent: Some(Box::new(enclosing)),
-//             symbols: HashMap::new(),
-//         }
-//     }
-
-//     pub fn define(&mut self, symbol: Symbol, val: Option<Typed<Value>>) {
-//         self.symbols.insert(
-//             symbol.name,
-//             (
-//                 val,
-//                 SourceLocation {
-//                     line: symbol.line,
-//                     col: symbol.col,
-//                 },
-//             ),
-//         );
-//     }
-
-//     pub fn lookup(&self, symbol: &Symbol) -> LookupResult {
-//         match self.symbols.get(&symbol.name) {
-//             Some((val, source)) => match val {
-//                 Some(value) => LookupResult::Ok(value),
-//                 None => LookupResult::UndefButDeclared(SourceLocation {
-//                     line: source.line,
-//                     col: source.col,
-//                 }),
-//             },
-//             None => LookupResult::UndefAndUndeclared,
-//         }
-//     }
-
-//     pub fn get(&self, symbol: &Symbol) -> Result<&Typed<Value>, String> {
-//         match self.lookup(symbol) {
-//             LookupResult::Ok(val) => Ok(val),
-//             LookupResult::UndefButDeclared(location) => Err(format!(
-//                 "Use of undefined variable '{}' at line {} col {}.\
-//                 \n'{}' was previously declared on line {} col {}, but was never defined.",
-//                 &symbol.name, symbol.line, symbol.col, &symbol.name, location.line, location.col
-//             )),
-//             LookupResult::UndefAndUndeclared => match &self.parent {
-//                 Some(enclosing) => enclosing.get(symbol),
-//                 None => Err(format!(
-//                     "Use of undefined variable '{}' on line {} col {}",
-//                     &symbol.name, symbol.line, symbol.col
-//                 )),
-//             },
-//         }
-//     }
-
-//     pub fn assign(&mut self, symbol: Symbol, value: &Typed<Value>) -> Result<(), String> {
-//         if self.symbols.contains_key(&symbol.name) {
-//             self.define(symbol, Some(value.clone()));
-//             return Ok(());
-//         }
-
-//         match &mut self.parent {
-//             Some(enclosing) => enclosing.assign(symbol, value),
-//             None => Err(format!(
-//                 "Attempting to assign to undeclared variable on line {} col {}",
-//                 symbol.line, symbol.col
-//             )),
-//         }
-//     }
-// }
+type TypedExpr = Typed<Expr>;
 
 type TypeId = usize;
 
@@ -231,14 +136,6 @@ impl<T> SymbolTable<T> {
             self.next_id += 1;
             self.symbols.get(symbol).unwrap()
         }
-        // if let Some(entry) = self.symbols.get(symbol) {
-        //     entry
-        // } else {
-        //     let entry = SymbolTableEntry::new(self.next_id, data);
-        //     self.symbols.insert(symbol.to_string(), entry);
-        //     self.next_id += 1;
-        //     self.symbols.get(symbol).unwrap()
-        // }
     }
 
     fn intern(&mut self, symbol: &str, data: T) -> &SymbolTableEntry<T> {
@@ -263,15 +160,13 @@ impl<T> SymbolTable<T> {
     }
 }
 
-type TypedAST = Vec<Typed<Stmt>>;
+type TypedAST = Vec<Stmt<TypedExpr>>;
 
 #[derive(Debug)]
 struct TypeBuilder {
     struct_tys: SymbolTable<Option<Vec<TypeInfo>>>,
     fn_tys: HashMap<String, Option<(Vec<TypeInfo>, TypeInfo)>>, // (Arg types, return type)
-    // struct_table: SymbolTable<Vec<TypeInfo>>,
-    // fn_table: SymbolTable<(Vec<TypeInfo>, TypeInfo)>,
-    symbol_table: SymbolTable<usize>, // idk what to do with this yet
+    symbol_table: SymbolTable<usize>,                           // idk what to do with this yet
 }
 
 impl TypeBuilder {
@@ -279,30 +174,30 @@ impl TypeBuilder {
         Self {
             struct_tys: SymbolTable::new(),
             fn_tys: HashMap::new(),
-            // struct_table: SymbolTable::new(),
-            // fn_table: SymbolTable::new(),
             symbol_table: SymbolTable::new(),
         }
     }
 
-    pub fn build(&mut self, ast: Vec<Stmt>) -> Result<TypedAST, TypeError> {
+    pub fn build(&mut self, ast: Vec<Stmt<Expr>>) -> Result<TypedAST, TypeError> {
         self.resolve_all(&ast)?;
-        print!("{:#?}", self);
+        println!("{:#?}", self);
         ast.into_iter()
             .map(|node| self.build_stmt(node))
             .collect::<Result<TypedAST, TypeError>>()
     }
 
-    fn build_stmt(&mut self, stmt: Stmt) -> Result<Typed<Stmt>, TypeError> {
+    fn build_stmt(&mut self, stmt: Stmt<Expr>) -> Result<Stmt<TypedExpr>, TypeError> {
         match stmt {
             Stmt::Expr(expr) => {
                 let expr = self.build_expr(expr)?;
-                Ok(Typed::new(expr.ty, Stmt::Expr(expr.value)))
+                Ok(Stmt::Expr(expr))
             }
 
             Stmt::VarDecl(symbol, maybe_ty, maybe_init) => {
                 self.build_var_decl(symbol, maybe_ty, maybe_init)
             }
+
+            Stmt::StructDecl(decl) => Ok(Stmt::StructDecl(decl)),
 
             other => {
                 panic!("Stmt {:?} not implemented yet!", other);
@@ -315,7 +210,7 @@ impl TypeBuilder {
         symbol: Symbol,
         maybe_ty: Option<TypeAnnotation>,
         maybe_init: Option<Expr>,
-    ) -> Result<Typed<Stmt>, TypeError> {
+    ) -> Result<Stmt<TypedExpr>, TypeError> {
         if maybe_ty.is_none() && maybe_init.is_none() {
             Err(TypeError::NoTypeInfo(
                 SourceLocation {
@@ -332,10 +227,7 @@ impl TypeBuilder {
                 if let Some(init) = maybe_init {
                     let init_ty = self.build_expr(init)?;
                     if init_ty.ty == annotation {
-                        Ok(Typed::new(
-                            init_ty.ty,
-                            Stmt::VarDecl(symbol, Some(ty), Some(init_ty.value)),
-                        ))
+                        Ok(Stmt::VarDecl(symbol, Some(ty), Some(init_ty)))
                     } else {
                         Err(TypeError::MismatchedTypes(
                             SourceLocation {
@@ -346,22 +238,16 @@ impl TypeBuilder {
                         ))
                     }
                 } else {
-                    Ok(Typed::new(
-                        annotation,
-                        Stmt::VarDecl(symbol, Some(ty), maybe_init),
-                    ))
+                    Ok(Stmt::VarDecl(symbol, Some(ty), None))
                 }
             } else {
                 let init = self.build_expr(maybe_init.unwrap())?;
-                Ok(Typed::new(
-                    init.ty,
-                    Stmt::VarDecl(symbol, maybe_ty, Some(init.value)),
-                ))
+                Ok(Stmt::VarDecl(symbol, maybe_ty, Some(init)))
             }
         }
     }
 
-    fn build_expr(&mut self, expr: Expr) -> Result<Typed<Expr>, TypeError> {
+    fn build_expr(&mut self, expr: Expr) -> Result<TypedExpr, TypeError> {
         match expr {
             Expr::Literal(literal) => self.build_literal(literal),
 
@@ -382,7 +268,7 @@ impl TypeBuilder {
         lhs: Box<Expr>,
         op: LogicalOp,
         rhs: Box<Expr>,
-    ) -> Result<Typed<Expr>, TypeError> {
+    ) -> Result<TypedExpr, TypeError> {
         let typed_lhs = self.build_expr(*lhs)?;
         let typed_rhs = self.build_expr(*rhs)?;
         match (typed_lhs.ty, typed_rhs.ty) {
@@ -405,7 +291,7 @@ impl TypeBuilder {
         lhs: Box<Expr>,
         op: BinaryOp,
         rhs: Box<Expr>,
-    ) -> Result<Typed<Expr>, TypeError> {
+    ) -> Result<TypedExpr, TypeError> {
         let typed_lhs = self.build_expr(*lhs)?;
         let typed_rhs = self.build_expr(*rhs)?;
         match (typed_lhs.ty, typed_rhs.ty) {
@@ -466,7 +352,7 @@ impl TypeBuilder {
         }
     }
 
-    fn build_unary(&mut self, op: UnaryOp, expr: Box<Expr>) -> Result<Typed<Expr>, TypeError> {
+    fn build_unary(&mut self, op: UnaryOp, expr: Box<Expr>) -> Result<TypedExpr, TypeError> {
         let typed_expr = self.build_expr(*expr)?;
         match (op.op_type, typed_expr.ty) {
             (UnaryOpType::Minus, TypeInfo::Number) => Ok(Typed::new(
@@ -490,7 +376,7 @@ impl TypeBuilder {
         }
     }
 
-    fn build_literal(&mut self, literal: Literal) -> Result<Typed<Expr>, TypeError> {
+    fn build_literal(&mut self, literal: Literal) -> Result<TypedExpr, TypeError> {
         let lit = match literal {
             Literal::False | Literal::True => Typed::new(TypeInfo::Bool, literal),
             Literal::Null => Typed::new(TypeInfo::Null, literal),
@@ -500,7 +386,7 @@ impl TypeBuilder {
         Ok(Typed::new(lit.ty, Expr::Literal(lit.value)))
     }
 
-    fn resolve_all(&mut self, ast: &[Stmt]) -> Result<(), TypeError> {
+    fn resolve_all(&mut self, ast: &[Stmt<Expr>]) -> Result<(), TypeError> {
         self.resolve_struct_names(ast)?;
         for node in ast {
             match node {
@@ -522,17 +408,17 @@ impl TypeBuilder {
                         let mut field_tys = vec![];
                         for field in &struct_decl.fields {
                             let typed_field = self.build_stmt(field.clone())?;
-                            field_tys.push(typed_field.ty);
+                            let ty = self.get_stmt_type(typed_field)?;
+                            field_tys.push(ty);
                         }
                         self.struct_tys
                             .intern(&struct_decl.name.name, Some(field_tys));
                     } else {
-                        //self.struct_tys.put(&struct_decl.name.name);
-                        // Resolve inner types
                         let mut field_tys = vec![];
                         for field in &struct_decl.fields {
                             let typed_field = self.build_stmt(field.clone())?;
-                            field_tys.push(typed_field.ty);
+                            let ty = self.get_stmt_type(typed_field)?;
+                            field_tys.push(ty);
                         }
                         self.struct_tys
                             .intern(&struct_decl.name.name, Some(field_tys));
@@ -552,6 +438,8 @@ impl TypeBuilder {
                             arg_tys.push(resolved_ty);
                         }
 
+                        let ret_ty = self.resolve_type(&fun_decl.ret_ty)?;
+
                         // Resolve arg & return types
                     }
                 }
@@ -563,7 +451,29 @@ impl TypeBuilder {
         Ok(())
     }
 
-    fn resolve_struct_names(&mut self, ast: &[Stmt]) -> Result<(), TypeError> {
+    fn get_stmt_type(&mut self, stmt: Stmt<TypedExpr>) -> Result<TypeInfo, TypeError> {
+        match stmt {
+            Stmt::Block(..) => Ok(TypeInfo::Void),
+            Stmt::VarDecl(name, maybe_ty, maybe_init) => {
+                if let Some(ty) = maybe_ty {
+                    self.resolve_type(&ty)
+                } else if let Some(init) = maybe_init {
+                    Ok(init.ty)
+                } else {
+                    Err(TypeError::NoTypeInfo(
+                        SourceLocation {
+                            line: name.line,
+                            col: name.col,
+                        },
+                        format!("No type info for variable"),
+                    ))
+                }
+            }
+            _ => panic!("oopsies"),
+        }
+    }
+
+    fn resolve_struct_names(&mut self, ast: &[Stmt<Expr>]) -> Result<(), TypeError> {
         for node in ast {
             match node {
                 Stmt::StructDecl(decl) => {
@@ -595,7 +505,13 @@ impl TypeBuilder {
                     ))
                 }
             }
-            _ => panic!("Not implemented yet"),
+            TypeAnnotation::Function(maybe_name, arg_tys, ret_ty) => {
+                // If name does not exist, it must be passed as a function arg, parser takes care of this
+                panic!("Function typechecking not implemented yet")
+            }
+            TypeAnnotation::Array(inner) => {
+                Ok(TypeInfo::Array(Box::new(self.resolve_type(inner)?)))
+            }
         }
     }
 }
@@ -609,7 +525,7 @@ mod tests {
     fn test() {
         match lexer::lex_tokens(
             r#"
-            omelette MyStruct |> thing: cal# thingTwo: MyStruct# <|
+            food something: smoothie ==E 5#
             "#
             .to_string(),
         ) {

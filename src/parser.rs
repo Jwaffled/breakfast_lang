@@ -9,7 +9,7 @@ use crate::ast::{
 use crate::tokens;
 use crate::tokens::{Token, TokenType};
 
-pub fn parse(tokens: Vec<Token>) -> Result<Vec<Stmt>, ParserError> {
+pub fn parse(tokens: Vec<Token>) -> Result<Vec<Stmt<Expr>>, ParserError> {
     let mut parser = Parser::new(tokens);
     parser.parse()
 }
@@ -258,7 +258,7 @@ impl Parser {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Vec<Stmt>, ParserError> {
+    pub fn parse(&mut self) -> Result<Vec<Stmt<Expr>>, ParserError> {
         let mut statements = Vec::new();
 
         while !self.is_at_end() {
@@ -268,7 +268,7 @@ impl Parser {
         Ok(statements)
     }
 
-    fn declaration(&mut self) -> Result<Stmt, ParserError> {
+    fn declaration(&mut self) -> Result<Stmt<Expr>, ParserError> {
         /*
             declaration -> fnDecl
             | statement
@@ -368,7 +368,7 @@ impl Parser {
 
     fn fun_params_and_body(
         &mut self,
-    ) -> Result<(Vec<FnArgument>, Vec<Stmt>, TypeAnnotation), ParserError> {
+    ) -> Result<(Vec<FnArgument>, Vec<Stmt<Expr>>, TypeAnnotation), ParserError> {
         let (params, ret_ty) = self.fun_params_and_ret()?;
 
         self.consume(
@@ -382,7 +382,7 @@ impl Parser {
         Ok((params, body, ret_ty))
     }
 
-    fn struct_decl(&mut self) -> Result<Stmt, ParserError> {
+    fn struct_decl(&mut self) -> Result<Stmt<Expr>, ParserError> {
         let name_tok = self
             .consume(TokenType::Identifier, "Expected struct name")?
             .clone();
@@ -409,7 +409,7 @@ impl Parser {
         }))
     }
 
-    fn var_decl(&mut self) -> Result<Stmt, ParserError> {
+    fn var_decl(&mut self) -> Result<Stmt<Expr>, ParserError> {
         let name_tok = self
             .consume(TokenType::Identifier, "Expected variable name")?
             .clone();
@@ -446,7 +446,7 @@ impl Parser {
         ))
     }
 
-    fn statement(&mut self) -> Result<Stmt, ParserError> {
+    fn statement(&mut self) -> Result<Stmt<Expr>, ParserError> {
         /*
             statement -> exprStmt
             | printStmt
@@ -488,7 +488,7 @@ impl Parser {
         self.expression_stmt()
     }
 
-    fn for_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn for_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         /*
             forStmt -> "prepare" "("
             ("preheat" IDENTIFIER "at" expression ";" | ";")
@@ -558,7 +558,7 @@ impl Parser {
         Ok(body)
     }
 
-    fn while_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn while_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         /*
             whileStmt -> "flipwhen" "(" expression ")" statement;
         */
@@ -570,7 +570,7 @@ impl Parser {
         Ok(Stmt::While(condition, body, false))
     }
 
-    fn if_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn if_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         /*
             ifStmt -> "if" "(" expression ")" statement ("else" statement)?;
         */
@@ -587,7 +587,7 @@ impl Parser {
         Ok(Stmt::If(condition, then_branch, else_branch))
     }
 
-    fn do_while_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn do_while_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         /*
         doWhileStmt -> "mix" statement "until(" expression ");";
         */
@@ -605,7 +605,7 @@ impl Parser {
         Ok(Stmt::While(condition, Box::new(body), true))
     }
 
-    fn block(&mut self) -> Result<Vec<Stmt>, ParserError> {
+    fn block(&mut self) -> Result<Vec<Stmt<Expr>>, ParserError> {
         let mut statements = Vec::new();
 
         while !self.check(TokenType::CloseScopeBar) && !self.is_at_end() {
@@ -617,7 +617,7 @@ impl Parser {
         Ok(statements)
     }
 
-    fn return_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn return_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         let prev_tok = self.previous().clone();
 
         if !self.in_function {
@@ -646,13 +646,13 @@ impl Parser {
         ))
     }
 
-    fn print_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn print_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         let value = self.expression()?;
         self.consume(TokenType::Semicolon, "Expected '#' after expression.")?;
         Ok(Stmt::Print(value))
     }
 
-    fn expression_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn expression_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {
         let expr = self.expression()?;
 
         self.consume(

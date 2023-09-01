@@ -19,15 +19,15 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone)]
-pub enum Stmt {
-    Expr(Expr),
-    Print(Expr),
-    If(Expr, Box<Stmt>, Option<Box<Stmt>>),
+pub enum Stmt<T> {
+    Expr(T),
+    Print(T),
+    If(T, Box<Stmt<T>>, Option<Box<Stmt<T>>>),
     FunDecl(FunDecl),
-    Return(SourceLocation, Option<Expr>),
-    VarDecl(Symbol, Option<TypeAnnotation>, Option<Expr>),
-    Block(Vec<Stmt>),
-    While(Expr, Box<Stmt>, /* invert condition? */ bool),
+    Return(SourceLocation, Option<T>),
+    VarDecl(Symbol, Option<TypeAnnotation>, Option<T>),
+    Block(Vec<Stmt<T>>),
+    While(T, Box<Stmt<T>>, /* invert condition? */ bool),
     StructDecl(StructDecl),
 }
 
@@ -45,7 +45,7 @@ pub enum TypeAnnotation {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: Symbol,
-    pub fields: Vec<Stmt>,
+    pub fields: Vec<Stmt<Expr>>,
 }
 
 impl StructDecl {
@@ -90,7 +90,7 @@ pub struct FunDecl {
         /* arg token */ Symbol,
         /* arg type */ TypeAnnotation,
     )>,
-    pub body: Vec<Stmt>,
+    pub body: Vec<Stmt<Expr>>,
     pub ret_ty: TypeAnnotation,
 }
 
