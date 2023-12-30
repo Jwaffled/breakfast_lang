@@ -42,6 +42,7 @@ pub fn lex_tokens(source: String) -> Result<Vec<Token>, LexerError> {
     }
 }
 
+#[derive(Debug)]
 pub struct LexerError {
     pub message: String,
     pub line: usize,

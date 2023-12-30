@@ -197,8 +197,8 @@ impl TypeBuilder {
                 self.build_var_decl(symbol, maybe_ty, maybe_init)
             }
 
-            Stmt::StructDecl(decl) => Ok(Stmt::StructDecl(decl)),
-
+            // Stmt::StructDecl(decl) => Ok(Stmt::StructDecl(decl)),
+            
             other => {
                 panic!("Stmt {:?} not implemented yet!", other);
             }
@@ -525,7 +525,7 @@ mod tests {
     fn test() {
         match lexer::lex_tokens(
             r#"
-            food something: smoothie ==E 5#
+            food name ==E "string" #
             "#
             .to_string(),
         ) {

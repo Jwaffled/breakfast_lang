@@ -574,7 +574,9 @@ impl Parser {
         /*
             ifStmt -> "if" "(" expression ")" statement ("else" statement)?;
         */
-        self.consume(TokenType::LeftParen, "Expected '(' after 'if'")?;
+        let token = self
+            .consume(TokenType::LeftParen, "Expected '(' after 'if'")?
+            .clone();
         let condition = self.expression()?;
         self.consume(TokenType::RightParen, "Expected ')' after if condition")?;
         let then_branch = Box::new(self.statement()?);
@@ -584,7 +586,12 @@ impl Parser {
             None
         };
 
-        Ok(Stmt::If(condition, then_branch, else_branch))
+        Ok(Stmt::If(
+            condition,
+            then_branch,
+            else_branch,
+            SourceLocation::new(token.line, token.col),
+        ))
     }
 
     fn do_while_stmt(&mut self) -> Result<Stmt<Expr>, ParserError> {

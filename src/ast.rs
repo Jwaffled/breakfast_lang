@@ -22,13 +22,13 @@ pub enum Expr {
 pub enum Stmt<T> {
     Expr(T),
     Print(T),
-    If(T, Box<Stmt<T>>, Option<Box<Stmt<T>>>),
+    If(T, Box<Stmt<T>>, Option<Box<Stmt<T>>>, SourceLocation),
     FunDecl(FunDecl),
     Return(SourceLocation, Option<T>),
     VarDecl(Symbol, Option<TypeAnnotation>, Option<T>),
     Block(Vec<Stmt<T>>),
     While(T, Box<Stmt<T>>, /* invert condition? */ bool),
-    StructDecl(StructDecl),
+    StructDecl(StructDecl<T>),
 }
 
 #[derive(Debug, Clone)]
@@ -43,12 +43,12 @@ pub enum TypeAnnotation {
 }
 
 #[derive(Debug, Clone)]
-pub struct StructDecl {
+pub struct StructDecl<T> {
     pub name: Symbol,
-    pub fields: Vec<Stmt<Expr>>,
+    pub fields: Vec<Stmt<T>>,
 }
 
-impl StructDecl {
+impl<T> StructDecl<T> {
     pub(crate) fn create_native(name: String) -> Self {
         Self {
             name: Symbol {
@@ -74,6 +74,12 @@ pub enum Literal {
 pub struct SourceLocation {
     pub line: usize,
     pub col: i64,
+}
+
+impl SourceLocation {
+    pub fn new(line: usize, col: i64) -> Self {
+        Self { line, col }
+    }
 }
 
 #[derive(Debug, Clone)]
