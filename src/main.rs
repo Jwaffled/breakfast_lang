@@ -18,14 +18,13 @@ fn main() {
         io::stdin().read_line(&mut input).unwrap();
         match lexer::lex_tokens(input) {
             Ok(tokens) => match parser::parse(tokens) {
-                Ok(ast) => match new_analysis::typecheck_ast(ast) {
+                Ok(ast) => match new_analysis::typecheck_ast(&ast) {
                     Ok(ty_ast) => println!("{:#?}", ty_ast),
-                    Err(ty_err) => println!("Type error: {:?}", ty_err)
+                    Err(ty_err) => println!("Type error: {:?}", ty_err),
                 },
-                Err(parse_err) => println!("Parse error: {:?}", parse_err)
+                Err(parse_err) => println!("Parse error: {:?}", parse_err),
             },
-            Err(lex_err) => println!("Lex error: {:?}", lex_err)
+            Err(lex_err) => println!("Lex error: {:?}", lex_err),
         }
     }
-    
 }

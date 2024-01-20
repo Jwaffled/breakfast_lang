@@ -23,7 +23,7 @@ pub enum Stmt<T> {
     Expr(T),
     Print(T),
     If(T, Box<Stmt<T>>, Option<Box<Stmt<T>>>, SourceLocation),
-    FunDecl(FunDecl),
+    FunDecl(FunDecl<T>),
     Return(SourceLocation, Option<T>),
     VarDecl(Symbol, Option<TypeAnnotation>, Option<T>),
     Block(Vec<Stmt<T>>),
@@ -90,13 +90,13 @@ pub struct Symbol {
 }
 
 #[derive(Debug, Clone)]
-pub struct FunDecl {
+pub struct FunDecl<T> {
     pub name: Symbol,
     pub params: Vec<(
         /* arg token */ Symbol,
         /* arg type */ TypeAnnotation,
     )>,
-    pub body: Vec<Stmt<Expr>>,
+    pub body: Vec<Stmt<T>>,
     pub ret_ty: TypeAnnotation,
 }
 

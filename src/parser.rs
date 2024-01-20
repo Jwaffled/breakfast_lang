@@ -290,7 +290,7 @@ impl Parser {
         self.statement()
     }
 
-    fn fun_decl(&mut self) -> Result<FunDecl, ParserError> {
+    fn fun_decl(&mut self) -> Result<FunDecl<Expr>, ParserError> {
         let name = self.consume(
             TokenType::Identifier,
             "Expected function name after 'pancake' keyword",
