@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     BinaryOp, BinaryOpType, Expr, FunDecl, Literal, LogicalOp, SourceLocation, Stmt, StructDecl,
@@ -32,17 +32,18 @@ impl TypeInfo {
                     Ok(TypeInfo::Struct(symbol.name.clone()))
                 } else {
                     Err(TypeError::StructNotDefined(
-                        SourceLocation::new(symbol.line, symbol.col),
+                        SourceLocation::from(symbol),
                         format!("Struct '{}' does not exist", symbol.name),
                     ))
                 }
             }
             TypeAnnotation::Function(_, args, ret_ty) => {
                 // We do not care if it is a named function or not, just ignore the name
-                let mut converted = vec![];
-                for arg in args {
-                    converted.push(Self::from_annotation(arg, env)?);
-                }
+                let converted = args
+                    .iter()
+                    .map(|x| Self::from_annotation(x, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+
                 Ok(TypeInfo::Function(
                     Box::new(Self::from_annotation(ret_ty, env)?),
                     converted,
@@ -80,6 +81,7 @@ pub enum TypeError {
     DuplicateVarDecl(SourceLocation, String),
     VariableNotDefined(SourceLocation, String),
     StructNotDefined(SourceLocation, String),
+    NotEnoughTypeInfo(SourceLocation, String),
 }
 
 #[derive(Clone)]
@@ -110,16 +112,14 @@ impl SymbolEnvironment {
     }
 
     fn define(&mut self, symbol: &Symbol) {
-        self.locals.insert(
-            symbol.name.clone(),
-            (None, SourceLocation::new(symbol.line, symbol.col)),
-        );
+        self.locals
+            .insert(symbol.name.clone(), (None, SourceLocation::from(symbol)));
     }
 
     fn define_and_assign(&mut self, symbol: &Symbol, ty: TypeInfo) {
         self.locals.insert(
             symbol.name.clone(),
-            (Some(ty), SourceLocation::new(symbol.line, symbol.col)),
+            (Some(ty), SourceLocation::from(symbol)),
         );
     }
 
@@ -168,6 +168,7 @@ impl SymbolEnvironment {
 struct TypeEnvironment {
     symbols: SymbolEnvironment,
     structs: HashMap<String, StructDecl<Expr>>,
+    struct_field_meta: HashMap<String, HashSet<String>>,
     functions: HashMap<String, FunDecl<Expr>>,
 }
 
@@ -176,6 +177,7 @@ impl TypeEnvironment {
         let mut env = Self {
             symbols: SymbolEnvironment::new(),
             structs: HashMap::new(),
+            struct_field_meta: HashMap::new(),
             functions: HashMap::new(),
         };
 
@@ -186,7 +188,7 @@ impl TypeEnvironment {
     fn define_sym(&mut self, symbol: &Symbol) -> Result<(), TypeError> {
         if self.symbols.has_type_info(symbol) {
             Err(TypeError::DuplicateVarDecl(
-                SourceLocation::new(symbol.line, symbol.col),
+                SourceLocation::from(symbol),
                 format!("Variable '{}' defined more than once", symbol.name),
             ))
         } else {
@@ -203,7 +205,7 @@ impl TypeEnvironment {
             LookupResult::NoTypeInfo(_) => self.symbols.assign(&symbol.name, ty),
             LookupResult::Undeclared => {
                 return Err(TypeError::VariableNotDefined(
-                    SourceLocation::new(symbol.line, symbol.col),
+                    SourceLocation::from(symbol),
                     format!("Variable '{}' assigned to before definition", symbol.name),
                 ));
             }
@@ -215,7 +217,7 @@ impl TypeEnvironment {
     fn define_and_assign_sym(&mut self, symbol: &Symbol, ty: TypeInfo) -> Result<(), TypeError> {
         if self.symbols.has_type_info(symbol) {
             Err(TypeError::DuplicateVarDecl(
-                SourceLocation::new(symbol.line, symbol.col),
+                SourceLocation::from(symbol),
                 format!("Variable '{}' defined more than once", symbol.name),
             ))
         } else {
@@ -224,10 +226,37 @@ impl TypeEnvironment {
         }
     }
 
+    fn get_sym_type(&self, symbol: &Symbol) -> Result<TypeInfo, TypeError> {
+        let info = self.symbols.lookup_all(symbol);
+        match info {
+            LookupResult::Ok(ty) => Ok(ty),
+            LookupResult::NoTypeInfo(loc) => Err(TypeError::NotEnoughTypeInfo(
+                loc,
+                format!(
+                    "Variable '{}' has an unknown type in this usage",
+                    symbol.name
+                ),
+            )),
+            LookupResult::Undeclared => Err(TypeError::VariableNotDefined(
+                SourceLocation::from(symbol),
+                format!("Variable '{}' used before definition", symbol.name),
+            )),
+        }
+    }
+
+    fn struct_has_field(&self, struct_name: &String, field: &Symbol) -> bool {
+        if let Some(props) = self.struct_field_meta.get(struct_name) {
+            props.contains(&field.name)
+        } else {
+            false
+        }
+    }
+
     fn clean_env(&self) -> Self {
         Self {
             symbols: SymbolEnvironment::new(),
             structs: self.structs.clone(),
+            struct_field_meta: self.struct_field_meta.clone(),
             functions: self.functions.clone(),
         }
     }
@@ -239,7 +268,7 @@ impl TypeEnvironment {
                 Stmt::FunDecl(decl) => {
                     if self.functions.contains_key(&decl.name.name) {
                         return Err(TypeError::DuplicateFuncDecl(
-                            SourceLocation::new(decl.name.line, decl.name.col),
+                            SourceLocation::from(&decl.name),
                             format!("Function '{}' already defined", decl.name.name),
                         ));
                     }
@@ -250,11 +279,33 @@ impl TypeEnvironment {
                 Stmt::StructDecl(decl) => {
                     if self.structs.contains_key(&decl.name.name) {
                         return Err(TypeError::DuplicateStructDecl(
-                            SourceLocation::new(decl.name.line, decl.name.col),
+                            SourceLocation::from(&decl.name),
                             format!("Struct '{}' already defined", decl.name.name),
                         ));
                     }
+                    let mut field_meta = HashSet::new();
+                    for field in &decl.fields {
+                        match field {
+                            Stmt::VarDecl(symbol, _, _) => {
+                                if !field_meta.insert(symbol.name.clone()) {
+                                    return Err(TypeError::DuplicateVarDecl(
+                                        SourceLocation::from(&decl.name),
+                                        format!(
+                                            "Struct '{}' contains duplicate fields '{}'",
+                                            decl.name.name, symbol.name
+                                        ),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
 
+                    // TODO: Typecheck struct fields and insert into metadata
+                    // (Don't forget recursive structs!)
+
+                    self.struct_field_meta
+                        .insert(decl.name.name.clone(), field_meta);
                     self.structs.insert(decl.name.name.clone(), decl.clone());
                 }
                 _ => {}
@@ -262,6 +313,7 @@ impl TypeEnvironment {
         }
 
         // Register variables
+        // TODO: DO NOT ALLOW VARIABLES TO BE NAMED THE SAME AS FUNCTIONS OR STRUCTS
         for node in ast {
             match node {
                 Stmt::VarDecl(symbol, maybe_ty, maybe_init) => {
@@ -273,7 +325,7 @@ impl TypeEnvironment {
                         let expr_ty = maybe_init.clone().unwrap().check(self)?;
                         if ty != expr_ty.ty {
                             return Err(TypeError::ExpectedType(
-                                SourceLocation::new(symbol.line, symbol.col),
+                                SourceLocation::from(symbol),
                                 "Expected initialization to agree with type annotation".to_string(),
                             ));
                         }
@@ -335,10 +387,10 @@ impl TypeCheck for Stmt<Expr> {
 
             Stmt::Block(stmts) => {
                 env.symbols = SymbolEnvironment::with_enclosing(env.symbols.clone());
-                let mut checked_stmts = vec![];
-                for stmt in stmts {
-                    checked_stmts.push(stmt.check(env)?);
-                }
+                let checked_stmts = stmts
+                    .iter()
+                    .map(|x| x.check(env))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 if let Some(enclosing) = env.symbols.enclosing.clone() {
                     env.symbols = *enclosing;
@@ -373,10 +425,11 @@ impl TypeCheck for Stmt<Expr> {
             }
 
             Stmt::StructDecl(decl) => {
-                let mut fields = vec![];
-                for field in &decl.fields {
-                    fields.push(field.check(env)?);
-                }
+                let fields = decl
+                    .fields
+                    .iter()
+                    .map(|x| x.check(env))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Stmt::StructDecl(StructDecl {
                     name: decl.name.clone(),
@@ -388,7 +441,6 @@ impl TypeCheck for Stmt<Expr> {
                 // sanitize type environment
                 // add args to type environment
                 // typecheck body
-                // ggs go next
                 let mut sanitized_env = env.clean_env();
                 for (sym, arg_ty) in &decl.params {
                     sanitized_env.define_and_assign_sym(
@@ -396,10 +448,12 @@ impl TypeCheck for Stmt<Expr> {
                         TypeInfo::from_annotation(arg_ty, &sanitized_env)?,
                     )?;
                 }
-                let mut body = vec![];
-                for stmt in &decl.body {
-                    body.push(stmt.check(&mut sanitized_env)?);
-                }
+
+                let body = decl
+                    .body
+                    .iter()
+                    .map(|x| x.check(&mut sanitized_env))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Stmt::FunDecl(FunDecl {
                     name: decl.name.clone(),
@@ -432,11 +486,14 @@ impl TypeCheck for Expr {
     fn check(&self, env: &mut TypeEnvironment) -> Result<Self::Checked, TypeError> {
         match self {
             Self::Literal(literal) => literal.check(env),
+            Self::Grouping(expr) => expr.check(env),
             Self::Binary(lhs, op, rhs) => check_binary(lhs, *op, rhs, env),
             Self::Unary(op, expr) => check_unary(*op, expr, env),
             Self::Logical(lhs, op, rhs) => check_logical(lhs, *op, rhs, env),
-            // For assignment, just return void as the type, I made a fundamental mistake making assignment an Expr instead of a Stmt
+            Self::Variable(symbol) => check_variable(symbol, env),
+            Self::Get(expr, symbol) => check_get(expr, symbol, env),
 
+            // For assignment, just return void as the type, I made a fundamental mistake making assignment an Expr instead of a Stmt
             other => {
                 panic!("Expr {:?} not implemented yet", other);
             }
@@ -467,6 +524,60 @@ pub fn typecheck_ast(ast: &Vec<Stmt<Expr>>) -> Result<TypedAST, TypeError> {
         .collect::<Result<TypedAST, TypeError>>()
 }
 
+fn check_get(expr: &Box<Expr>, symbol: &Symbol, env: &mut TypeEnvironment) -> ExprResult {
+    let expr = expr.check(env)?;
+    match expr.ty {
+        TypeInfo::Struct(struct_name) => {
+            if env.structs.contains_key(&struct_name) {
+                if env.struct_has_field(&struct_name, symbol) {
+                    todo!();
+                } else {
+                    Err(TypeError::VariableNotDefined(
+                        SourceLocation::from(symbol),
+                        format!(
+                            "Property '{}' does not exist on struct '{}'",
+                            symbol.name, struct_name
+                        ),
+                    ))
+                }
+            } else {
+                Err(TypeError::StructNotDefined(
+                    SourceLocation::from(symbol),
+                    format!("Struct not defined"),
+                ))
+            }
+        }
+        _ => Err(TypeError::ExpectedType(
+            SourceLocation::from(symbol),
+            format!(
+                "Expected struct for property access, received '{}'",
+                env.resolve_type_name(expr.ty)
+            ),
+        )),
+    }
+}
+
+fn check_variable(symbol: &Symbol, env: &mut TypeEnvironment) -> ExprResult {
+    // Check if fn name, if not treat as regular variable
+    if env.functions.contains_key(&symbol.name) {
+        let fn_decl = env.functions.get(&symbol.name).unwrap();
+        let ret_ty = TypeInfo::from_annotation(&fn_decl.ret_ty, env)?;
+        let arg_tys = fn_decl
+            .params
+            .iter()
+            .map(|(_, arg)| TypeInfo::from_annotation(arg, env))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Typed::new(
+            TypeInfo::Function(Box::new(ret_ty), arg_tys),
+            Expr::Variable(symbol.clone()),
+        ))
+    } else {
+        let ty = env.get_sym_type(symbol)?;
+        Ok(Typed::new(ty, Expr::Variable(symbol.clone())))
+    }
+}
+
 fn check_binary(
     lhs: &Box<Expr>,
     op: BinaryOp,
@@ -475,7 +586,7 @@ fn check_binary(
 ) -> ExprResult {
     let typed_lhs = lhs.check(env)?;
     let typed_rhs = rhs.check(env)?;
-    let ty = match (typed_lhs.ty, typed_rhs.ty) {
+    let ty = match (&typed_lhs.ty, &typed_rhs.ty) {
         (TypeInfo::Number, TypeInfo::Number) => match op.op_type {
             BinaryOpType::Plus | BinaryOpType::Minus | BinaryOpType::Slash | BinaryOpType::Star => {
                 Ok(TypeInfo::Number)
@@ -498,13 +609,27 @@ fn check_binary(
                 format!("Cannot use operator '{}' on types Bool and Bool", op),
             )),
         },
+        (TypeInfo::String, TypeInfo::Number) | (TypeInfo::Number, TypeInfo::String) => {
+            match op.op_type {
+                BinaryOpType::Plus => Ok(TypeInfo::String),
+                _ => Err(TypeError::InvalidOperator(
+                    SourceLocation::new(op.line, op.col),
+                    format!(
+                        "Cannot use operator '{}' on types {} and {}",
+                        op,
+                        env.resolve_type_name(typed_lhs.ty),
+                        env.resolve_type_name(typed_rhs.ty)
+                    ),
+                )),
+            }
+        }
         (l_ty, r_ty) => Err(TypeError::InvalidOperator(
             SourceLocation::new(op.line, op.col),
             format!(
                 "Cannot use operator '{}' on types {} and {}",
                 op,
-                env.resolve_type_name(l_ty),
-                env.resolve_type_name(r_ty)
+                env.resolve_type_name(l_ty.clone()),
+                env.resolve_type_name(r_ty.clone())
             ),
         )),
     };

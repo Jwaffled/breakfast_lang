@@ -82,6 +82,15 @@ impl SourceLocation {
     }
 }
 
+impl From<&Symbol> for SourceLocation {
+    fn from(value: &Symbol) -> Self {
+        Self {
+            line: value.line,
+            col: value.col,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: String,
