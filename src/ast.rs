@@ -48,19 +48,6 @@ pub struct StructDecl<T> {
     pub fields: Vec<Stmt<T>>,
 }
 
-impl<T> StructDecl<T> {
-    pub(crate) fn create_native(name: String) -> Self {
-        Self {
-            name: Symbol {
-                name,
-                line: 0,
-                col: 0,
-            },
-            fields: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Literal {
     Number(f64),

@@ -5,6 +5,12 @@ use crate::ast::{
     Symbol, TypeAnnotation, UnaryOp, UnaryOpType,
 };
 
+// TODO
+// Allow null to be assigned to any type annotation
+// Throw error when type of something is unknown and gets assigned null
+// Don't allow duplicates of variable names (fix SymbolEnvironment)
+// ^^ Don't register variables ahead of time, that was stupid
+
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum TypeInfo {
     Number,
@@ -314,36 +320,6 @@ impl TypeEnvironment {
 
         // Register variables
         // TODO: DO NOT ALLOW VARIABLES TO BE NAMED THE SAME AS FUNCTIONS OR STRUCTS
-        for node in ast {
-            match node {
-                Stmt::VarDecl(symbol, maybe_ty, maybe_init) => {
-                    if !maybe_ty.is_some() && !maybe_init.is_some() {
-                        self.symbols.define(symbol);
-                    } else if maybe_ty.is_some() && maybe_init.is_some() {
-                        // Check if type annotation and init expr types agree
-                        let ty = TypeInfo::from_annotation(&maybe_ty.clone().unwrap(), self)?;
-                        let expr_ty = maybe_init.clone().unwrap().check(self)?;
-                        if ty != expr_ty.ty {
-                            return Err(TypeError::ExpectedType(
-                                SourceLocation::from(symbol),
-                                "Expected initialization to agree with type annotation".to_string(),
-                            ));
-                        }
-                        self.symbols.define_and_assign(symbol, ty)
-                    } else {
-                        let ty = {
-                            if maybe_ty.is_some() {
-                                TypeInfo::from_annotation(&maybe_ty.clone().unwrap(), self)?
-                            } else {
-                                maybe_init.clone().unwrap().check(self)?.ty
-                            }
-                        };
-                        self.symbols.define_and_assign(symbol, ty);
-                    }
-                }
-                _ => {}
-            }
-        }
 
         Ok(())
     }
@@ -464,13 +440,43 @@ impl TypeCheck for Stmt<Expr> {
             }
 
             Stmt::VarDecl(symbol, maybe_ty, maybe_init) => {
-                let checked = if let Some(init) = maybe_init {
-                    Some(init.check(env)?)
-                } else {
-                    None
-                };
+                if !maybe_ty.is_some() && !maybe_init.is_some() {
+                    // If no assignment or type, just declaration
+                    env.define_sym(symbol)?;
+                    Ok(Stmt::VarDecl(symbol.clone(), None, None))
+                } else if maybe_ty.is_some() && maybe_init.is_some() {
+                    // If both assignment and type annotation
+                    // Check if type annotation and init expr types agree
+                    let ty = TypeInfo::from_annotation(&maybe_ty.clone().unwrap(), env)?;
+                    let expr_ty = maybe_init.clone().unwrap().check(env)?;
 
-                Ok(Stmt::VarDecl(symbol.clone(), maybe_ty.clone(), checked))
+                    if ty != expr_ty.ty && expr_ty.ty != TypeInfo::Null {
+                        return Err(TypeError::ExpectedType(
+                            SourceLocation::from(symbol),
+                            "Expected initialization to agree with type annotation".to_string(),
+                        ));
+                    }
+
+                    env.define_and_assign_sym(symbol, ty.clone())?;
+                    Ok(Stmt::VarDecl(
+                        symbol.clone(),
+                        maybe_ty.clone(),
+                        Some(Typed::new(ty, expr_ty.value)),
+                    ))
+                } else {
+                    // If just assignment (infer) or type annotation (declaration)
+                    if maybe_ty.is_some() {
+                        Ok(Stmt::VarDecl(symbol.clone(), maybe_ty.clone(), None))
+                    } else {
+                        let maybe_null = maybe_init.clone().unwrap().check(env)?;
+                        if maybe_null.ty == TypeInfo::Null {
+                            Err(TypeError::NotEnoughTypeInfo(SourceLocation::from(symbol), format!("Value 'null' for variable '{}' does not contain enough type information to infer", symbol.name)))
+                        } else {
+                            env.define_and_assign_sym(symbol, maybe_null.ty.clone())?;
+                            Ok(Stmt::VarDecl(symbol.clone(), None, Some(maybe_null)))
+                        }
+                    }
+                }
             }
 
             other => {
